@@ -13,9 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""TODO
+"""Base class for Nizza models.
 """
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+
+import tensorflow as tf
+
+
+class NizzaModel(tf.estimator.Estimator):
+
+  def __init__(self, params, config=None):
+    """Constructs a new model instance.
+
+    Args:
+      params (HParams): Hyper-parameters for this model.
+      config (RunConfig): Run time configuration.
+    """
+    super(NizzaModel, self).__init__(
+        model_fn=self._model_fn, 
+        params=params, 
+        config=config)
+
+  def _model_fn(features, labels, mode, params):
+    print("modelfn")
+    print(features)

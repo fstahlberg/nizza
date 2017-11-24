@@ -12,3 +12,5 @@ for data generation, preprocessing, tokenization etc. Instead, we maintain
 compatibility with the [Tensor2Tensor](https://github.com/tensorflow/tensor2tensor)
 project, ie. training and dev sets created by T2T data generators can be used
 in Nizza.
+
+*Author: Felix Stahlberg*
