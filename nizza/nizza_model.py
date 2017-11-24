@@ -33,10 +33,19 @@ class NizzaModel(tf.estimator.Estimator):
       config (RunConfig): Run time configuration.
     """
     super(NizzaModel, self).__init__(
-        model_fn=self._model_fn, 
+        model_fn=self.nizza_model_fn, 
         params=params, 
         config=config)
 
-  def _model_fn(features, labels, mode, params):
+  def nizza_model_fn(self, features, mode, params):
     print("modelfn")
     print(features)
+    print(mode)
+    print(params)
+    loss = tf.constant(2)
+    train_op = tf.no_op()
+    return tf.estimator.EstimatorSpec(
+        mode=mode,
+        loss=loss,
+        train_op=train_op)
+
