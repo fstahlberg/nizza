@@ -13,4 +13,3 @@ compatibility with the [Tensor2Tensor](https://github.com/tensorflow/tensor2tens
 project, ie. training and dev sets created by T2T data generators can be used
 in Nizza.
 
-*Author: Felix Stahlberg*
