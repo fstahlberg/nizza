@@ -35,6 +35,8 @@ FLAGS = flags.FLAGS
 # See utils/nizza_utils.py for additional command-line flags.
 flags.DEFINE_integer("keep_checkpoint_max", 10,
                      "How many recent checkpoints to keep.")
+flags.DEFINE_integer("max_length", 150,
+                     "Maximum sentence length in training.")
 flags.DEFINE_integer("train_steps", 250000,
                      "The number of steps to run training for.")
 flags.DEFINE_integer("save_checkpoints_steps", 500,
@@ -47,11 +49,14 @@ flags.DEFINE_integer("min_eval_frequency", 2000,
                      "Run evaluation every this steps during training.")
 flags.DEFINE_integer("batch_size", 128,
                      "Run evaluation every this steps during training.")
+flags.DEFINE_float("learning_rate", 0.002,
+                   "Adam learning rate.")
 flags.DEFINE_bool("registry_help", False, "Print registry and die.")
 
 
 def _extend_hparams(hparams):
   hparams.add_hparam("train_steps", FLAGS.train_steps) 
+  hparams.add_hparam("learning_rate", FLAGS.learning_rate) 
   hparams.add_hparam("min_eval_frequency", FLAGS.min_eval_frequency) 
   return hparams
 
@@ -77,6 +82,7 @@ def experiment_fn(run_config, params):
         "%s-train*" % FLAGS.data_prefix,
         batch_size=FLAGS.batch_size,
         shuffle=True,
+        max_length=FLAGS.max_length,
         repeat_count=None)
     eval_input_fn = lambda: nizza_utils.build_input_fn(
         "%s-dev*" % FLAGS.data_prefix)

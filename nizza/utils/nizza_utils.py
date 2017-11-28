@@ -21,6 +21,7 @@ from __future__ import division
 from __future__ import print_function
 
 import random
+import functools
 
 from nizza import registry
 
@@ -34,6 +35,8 @@ flags.DEFINE_string("model_dir", "", "Directory containing the checkpoints.")
 flags.DEFINE_string("model", "", "Model name.")
 flags.DEFINE_string("hparams_set", "", "Predefined hyper-parameter set.")
 flags.DEFINE_string("hparams", "", "Additional hyper-parameters.")
+flags.DEFINE_integer("inputs_vocab_size", 32000, "Source vocabulary size.")
+flags.DEFINE_integer("targets_vocab_size", 32000, "Target vocabulary size.")
 
 
 def get_run_config():
@@ -58,13 +61,35 @@ def get_hparams():
     in the registry.
   """
   hparams = registry.get_registered_hparams_set(FLAGS.hparams_set)
+  hparams.add_hparam("inputs_vocab_size", FLAGS.inputs_vocab_size) 
+  hparams.add_hparam("targets_vocab_size", FLAGS.targets_vocab_size) 
   hparams.parse(FLAGS.hparams)
   return hparams
+
+
+def _example_length(example):
+  length = 0
+  # Length of the example is the maximum length of the feature lengths
+  for v in example.values():
+    # For images the sequence length is the size of the spatial dimensions.
+    feature_length = (tf.shape(v)[0] if len(v.get_shape()) < 3 else
+                      tf.shape(v)[0] * tf.shape(v)[1])
+    length = tf.maximum(length, feature_length)
+  return length
+
+
+def example_valid_size(example, max_length):
+  length = _example_length(example)
+  return tf.logical_and(
+      length >= 1,
+      length <= max_length,
+  )
 
 
 def build_input_fn(file_pattern, 
                    batch_size=1, 
                    shuffle=False, 
+                   max_length=None,
                    repeat_count=1):
   """This function can be used to build input functions for
   tf.Estimators.
@@ -80,6 +105,7 @@ def build_input_fn(file_pattern,
         contain wildcards
     batch_size (int): Batch size
     shuflle (bool): Whether to shuffle the dataset.
+    max_length(int): Maximum length of a sentence.
     repeat_count (int): Number of epochs, or None for infinite repeat.
 
   Returns:
@@ -107,10 +133,18 @@ def build_input_fn(file_pattern,
     random.shuffle(data_files)
   dataset = tf.data.TFRecordDataset(data_files)
   dataset = dataset.map(decode_record)
+  if max_length:
+    dataset = dataset.filter(
+        functools.partial(
+            example_valid_size,
+            max_length=max_length,
+        ))
   dataset = dataset.repeat(repeat_count)
   if shuffle:
     dataset = dataset.shuffle(buffer_size=FLAGS.batch_size * 100)
-  dataset = dataset.batch(FLAGS.batch_size)
+  dataset = dataset.padded_batch(FLAGS.batch_size, padded_shapes={
+     "inputs": [None],
+     "targets": [None]})
   iterator = dataset.make_one_shot_iterator()
   batch_features = iterator.get_next()
   return batch_features
