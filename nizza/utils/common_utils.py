@@ -201,5 +201,48 @@ def smoothing_cross_entropy(logits,
     return xentropy - normalizing
 
 
+def get_sentence_length(raw_x):
+  """Extracts sequence lengths from the raw feature.
+  Example:
+    raw_x = [
+      [123, 3, 2, 0, 0],
+      [321, 1, 0, 0, 0]]
+    return:
+      [3, 2]
+  Args:
+    raw_x: A [batch_size, max_length] int32 tensor
+  
+  Returns:
+    A [batch_size] int32 tensor with sequence lengths
+  """
+  not_padding = tf.not_equal(raw_x, PAD_ID)
+  not_padding_with_guardian = tf.pad(not_padding, [[0, 0], [0, 1]])
+  indices = tf.where(tf.logical_not(not_padding_with_guardian))
+  length = tf.segment_min(indices[:, 1], indices[:, 0])
+  return length
 
+
+def expand_to_shape(t, shp):
+  """Blows up a tensor to the specified shape by repeating it along the
+  additional axis. shp must contain as many x as t has dimensionality.
+  For example, expand_to_shape(t, [2, "x", 3]) assumes that t is 1-dimensional.
+  The returned tensor has shape [2, shape[t], 3].
+
+  Args:
+    t: A tensor.
+    shp: A list of TF scalars, Python integers, or "x". The number of "x" must
+         be equal to the dimensionality of t.
+
+  Returns:
+    A tensor with shape shp after replacing "x" with the corresponding axis in
+    t.
+  """
+  repeats = []
+  for axis, s in enumerate(shp):
+    if s == "x":
+      repeats.append(tf.constant(1, dtype=tf.int32))
+    else:
+      t = tf.expand_dims(t, axis)
+      repeats.append(s)
+  return tf.tile(t, tf.convert_to_tensor(repeats))
 

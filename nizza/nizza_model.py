@@ -40,8 +40,20 @@ class NizzaModel(tf.estimator.Estimator):
         config=config)
 
   def nizza_model_fn(self, features, mode, params):
-    logits = self.compute_logits(features, mode, params)
-    loss = self.compute_loss(features, mode, params, logits)
+    """This is the model_fn for nizza models. Subclasses should not
+    override this function directly, but rather control its behavior
+    by implementing `precompute()` and `compute_loss()`
+
+    Args:
+      features (dict): Dictionary of tensors holding the raw data.
+      mode (int): Running mode (train, eval, predict)
+      params (HParams): Hyper-parameters for this model.
+
+    Returns:
+      EstimatorSpec as expected by the tf.estimator framework.
+    """
+    precomputed = self.precompute(features, mode, params)
+    loss = self.compute_loss(features, mode, params, precomputed)
     train_op = tf.contrib.layers.optimize_loss(
         loss=loss,
         global_step=tf.train.get_global_step(),
@@ -54,18 +66,60 @@ class NizzaModel(tf.estimator.Estimator):
         train_op=train_op)
 
   def embed(self, features, feature_name, params):
-      with tf.variable_scope("%s_embed" % feature_name):
-        embed_matrix = tf.get_variable("embedding_matrix",
-              [getattr(params, "%s_vocab_size" % feature_name), 
-               getattr(params, "%s_embed_size" % feature_name)])
-        return tf.nn.embedding_lookup(embed_matrix, features[feature_name])
-    
+    """This is a helper function for alignment models for embeddings.
+    This function returns an embedding for features[name] of size
+    params.name_embed_size assuming a vocab size of params.name_vocab_size.
+    features[feature_name] has to be an integer tensor of shape
+    [batch_size, max_sequence_length].
 
-  def compute_logits(self, features, mode, params):
-    raise NotImplementedError("Model does not implement logit computation.")
+    Args:
+      features (dict): Dictionary of tensors
+      feature_name (string): Name of the feature
+      params (HParams): Hyper-parameters for this model.
 
-  def compute_loss(self, features, mode, params, logits):
-    loss_num, loss_den = common_utils.padded_cross_entropy(
-        logits, features["targets"], params.label_smoothing)
-    loss = loss_num / tf.maximum(1.0, loss_den)
-    return loss
+    Returns:
+      A [batch_size, max_sequence_length, embed_size] float32 of embeddings.
+    """
+    with tf.variable_scope("%s_embed" % feature_name):
+      embed_matrix = tf.get_variable("embedding_matrix",
+            [getattr(params, "%s_vocab_size" % feature_name), 
+             getattr(params, "%s_embed_size" % feature_name)])
+      return tf.nn.embedding_lookup(embed_matrix, features[feature_name])
+
+  def precompute(self, features, mode, params):
+    """Implemnenting this function can bundle the computation of 
+    variables which are used for both decoding (alignment/translation) and
+    training. The return value of that function is passed to compute_loss()
+    etc. as the `precomputed` argumemnt.
+
+    Args:
+      features (dict): Dictionary of tensors holding the raw data.
+      mode (int): Running mode (train, eval, predict)
+      params (HParams): Hyper-parameters for this model.
+
+    Returns:
+      object.
+    """
+    return None
+
+  def compute_loss(self, features, mode, params, precomputed):
+    """Computes the training loss for the alignment model. For example,
+    you could implement cross-entropy loss as
+
+      loss_num, loss_den = common_utils.padded_cross_entropy(
+          precomputed, features["targets"], params.label_smoothing)
+      loss = loss_num / tf.maximum(1.0, loss_den)
+      return loss
+
+    assuming that precomputed holds the logits for the targets.
+
+    Args:
+      features (dict): Dictionary of tensors holding the raw data.
+      mode (int): Running mode (train, eval, predict)
+      params (HParams): Hyper-parameters for this model.
+      precomputed: Return value of `precomputed()`
+
+    Returns:
+      A single float32 scalar which is the loss over the batch.
+    """
+    raise NotImplementedError("Model does not implement loss.")

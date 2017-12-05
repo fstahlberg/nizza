@@ -19,7 +19,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from nizza.models import model1
+from nizza.models import model1, model2
 
 # Singletons (GoF) storing the registry entries
 _hparams_set_registry = {}
@@ -35,8 +35,10 @@ def build_registry():
     return
   # hparams sets
   _hparams_set_registry.update(model1.register_hparams_sets())
+  _hparams_set_registry.update(model2.register_hparams_sets())
   # models
   _model_registry.update(model1.register_models())
+  _model_registry.update(model2.register_models())
   _registry_build = True
 
 

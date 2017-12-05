@@ -35,7 +35,7 @@ FLAGS = flags.FLAGS
 # See utils/nizza_utils.py for additional command-line flags.
 flags.DEFINE_integer("keep_checkpoint_max", 10,
                      "How many recent checkpoints to keep.")
-flags.DEFINE_integer("max_length", 150,
+flags.DEFINE_integer("max_length", 120,
                      "Maximum sentence length in training.")
 flags.DEFINE_integer("train_steps", 250000,
                      "The number of steps to run training for.")
@@ -47,7 +47,7 @@ flags.DEFINE_string("data_prefix", "", "Prefix to train and eval data. We "
                     "TFRecords as created by T2T's data generators.")
 flags.DEFINE_integer("min_eval_frequency", 2000,
                      "Run evaluation every this steps during training.")
-flags.DEFINE_integer("batch_size", 128,
+flags.DEFINE_integer("batch_size", 64,
                      "Run evaluation every this steps during training.")
 flags.DEFINE_float("learning_rate", 0.002,
                    "Adam learning rate.")
@@ -105,8 +105,7 @@ def main(_):
   if FLAGS.registry_help:
     registry.print_registry()
     return
-  #try:
-  if True:
+  try:
     hparams = nizza_utils.get_hparams()
     run_config = nizza_utils.get_run_config()
     hparams = _extend_hparams(hparams)
@@ -117,9 +116,9 @@ def main(_):
         schedule="train_and_evaluate",
         hparams=hparams
     )
-  #except ValueError as e:
-  #  tf.logging.fatal("A fatal error occurred, probably due to an error "
-  #                   "in the configuration: %s" % e)
+  except ValueError as e:
+    tf.logging.fatal("A fatal error occurred, probably due to an error "
+                     "in the configuration: %s" % e)
 
 
 if __name__ == "__main__":

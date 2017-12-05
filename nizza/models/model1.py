@@ -12,9 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""TODO
-"""
+"""Implementation of the neural alignment model 1."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -29,11 +27,10 @@ from tensorflow.contrib.training.python.training import hparam
 
 def register_hparams_sets():
   base = hparam.HParams(
-    hidden_units=[512, 512, 512],
+    lex_hidden_units=[512, 512, 512],
     inputs_embed_size=512,
     activation_fn=tf.nn.relu,
     logit_fn=tf.exp, # tf.exp, tf.sigmoid
-    label_smoothing=0.1,
     dropout=None
   )
   all_hparams = {}
@@ -46,11 +43,31 @@ def register_models():
 
 
 class Model1(NizzaModel):
-  def compute_logits(self, features, mode, params):
+  """Neural version of IBM 1 model. See paper for more details."""
+
+  def precompute(self, features, mode, params):
+    """We precompute the lexical translation logits for each src token."""
+    return self.compute_lex_logits(features, 'inputs', params)
+
+  def compute_lex_logits(self, features, feature_name, params):
+    """Model 1 style lexical translation scores, modelled by a feedforward
+    neural network. The source words must be stored in raw form in
+    features[feature_name] of shape [batch_size, max_src_sequence_length].
+
+    Args:
+      features (dict): Dictionary of tensors
+      feature_name (string): Name of the feature
+      params (HParams): Hyper-parameters for this model.
+      
+    Returns:
+      A [batch_size, max_src_equence_length, trg_vocab_size] float32 tensor
+      with unnormalized translation scores of the target words given the
+      source words.
+    """
     net = self.embed(features, 'inputs', params)
-    for layer_id, num_hidden_units in enumerate(params.hidden_units):
+    for layer_id, num_hidden_units in enumerate(params.lex_hidden_units):
       with tf.variable_scope(
-          "hiddenlayer_%d" % layer_id,
+          "lex_hiddenlayer_%d" % layer_id,
           values=(net,)) as hidden_layer_scope:
         net = tf.contrib.layers.fully_connected(
             net,
@@ -59,21 +76,21 @@ class Model1(NizzaModel):
         if params.dropout is not None and mode == model_fn.ModeKeys.TRAIN:
           net = layers.dropout(net, keep_prob=(1.0 - params.dropout))
       common_utils.add_hidden_layer_summary(net, hidden_layer_scope.name)
-
     with tf.variable_scope(
-        "logits",
+        "lex_logits",
         values=(net,)) as logits_scope:
       logits = tf.contrib.layers.fully_connected(
           net,
           params.targets_vocab_size,
           activation_fn=None)
     common_utils.add_hidden_layer_summary(logits, logits_scope.name)
-    return logits
+    return params.logit_fn(logits)
 
-  def compute_loss(self, features, mode, params, logits):
+  def compute_loss(self, features, mode, params, precomputed):
+    """See paper on how to compute the loss for Model 1."""
     inputs = features["inputs"]
     targets = features["targets"]
-    probs_num = params.logit_fn(logits)
+    probs_num = precomputed
     probs_denom = tf.reduce_sum(probs_num, axis=-1)
     inputs_weights = common_utils.weights_nonzero(inputs) 
     factors = tf.expand_dims(inputs_weights / probs_denom, -1)

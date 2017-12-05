@@ -81,7 +81,7 @@ def _example_length(example):
 def example_valid_size(example, max_length):
   length = _example_length(example)
   return tf.logical_and(
-      length >= 1,
+      length > 1,
       length <= max_length,
   )
 
