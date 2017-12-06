@@ -123,3 +123,22 @@ class NizzaModel(tf.estimator.Estimator):
       A single float32 scalar which is the loss over the batch.
     """
     raise NotImplementedError("Model does not implement loss.")
+
+  def predict_next_word(self, features, params, precomputed):
+    """Implementing this function makes the model usable for 
+    translation, eg. for use in SGNMT via the nizza predictor. This
+    function must return a distribution log P(f_j|f_1^j_1, e_1^I) such 
+    that summing over all target words yields log P(f_1^J|e_1^J). For 
+    example, This often requires maginalizing over the alignments.
+
+    Args:
+      features (dict): Dictionary of tensors holding the raw data.
+      params (HParams): Hyper-parameters for this model.
+      precomputed: Return value of `precomputed()`
+
+    Returns:
+      A [batch_size, trg_vocab_size] float32 tensor with the partial
+      log probabilities as described above.
+    """
+    raise NotImplementedError("Model does not implement word prediction.")
+

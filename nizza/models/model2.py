@@ -75,24 +75,15 @@ def register_hparams_sets():
   )
   all_hparams = {}
   all_hparams["model2_default"] = base
+  all_hparams["model2s_default"] = base
   return all_hparams
 
 
 def register_models():
-  return {"model2": Model2}
+  return {"model2": Model2, "model2s": Model2s}
 
 
-class Model2(Model1):
-
-  def precompute(self, features, mode, params):
-    """We precompute the lexical translation logits for each src token and the
-    IxJ table of distortion logits.
-    """
-    lex_logits = self.compute_lex_logits(features, 'inputs', params)
-    I = tf.cast(common_utils.get_sentence_length(features["inputs"]), tf.int32)
-    J = tf.cast(common_utils.get_sentence_length(features["targets"]), tf.int32)
-    dist_logits = self.compute_distance_scores(I, J, params)
-    return lex_logits, dist_logits, I, J
+class BaseModel2(Model1):
 
   def compute_positional_embeddings(
         self, max_pos, params, n_channels, max_timescale=1.0e4):
@@ -120,31 +111,19 @@ class Model2(Model1):
     signal = tf.reshape(signal, [max_pos+1, n_channels])
     return signal
 
-  def compute_distance_scores(self, I, J, params):
-    """Compute the unnormalized DistNet scores.
+  def compute_dist_net(self, net, params):
+    """Computes the distortion model from positional embeddings.
 
     Args:
-      I: A [batch_size] int32 tensor with source sentence lengths
-      J: A [batch_size] int32 tensor with target sentence lengths
-      params: hyper-parameters for that model
+      net: A [batch_size, max_src_len, max_trg_len, pos_embed_size]
+        tensor with the concatenated positional embeddings of all
+        inputs.
+      params: Hyper-parameters
 
     Returns:
       A [batch_size, max_src_len, max_trg_len] float32 tensor where the
-      entry at [b, i, j] stores DistNet(i, j, I[b], J[b])
+      entry at [b, i, j] stores DistNet(i, j, ...)
     """
-    max_i = tf.reduce_max(I)
-    max_j = tf.reduce_max(J)
-    batch_size = tf.shape(I)[0]
-    expand_I = common_utils.expand_to_shape(I, ["x", max_i, max_j])
-    expand_J = common_utils.expand_to_shape(J, ["x", max_i, max_j])
-    expand_i = common_utils.expand_to_shape(tf.range(max_i), [batch_size, "x", max_j])
-    expand_j = common_utils.expand_to_shape(tf.range(max_j), [batch_size, max_i, "x"])
-    int_inputs = tf.stack([expand_I, expand_J, expand_i, expand_j], axis=-1)
-    max_pos = tf.reduce_max(tf.concat([I, J], 0)) + 1
-    pos_embeds = self.compute_positional_embeddings(
-        max_pos, params, params.pos_embed_size,params.max_timescale)
-    embedded = tf.gather(pos_embeds, int_inputs)
-    net = tf.reshape(embedded, [batch_size, max_i, max_j, params.pos_embed_size * 4])
     for layer_id, num_hidden_units in enumerate(params.dist_hidden_units):
       with tf.variable_scope(
           "dist_hiddenlayer_%d" % layer_id,
@@ -168,7 +147,7 @@ class Model2(Model1):
     return logits
 
   def compute_loss(self, features, mode, params, precomputed):
-    lex_probs_num, dist_logits, I, J = precomputed
+    lex_probs_num, dist_logits = precomputed
     # lex_probs_num[b, i, t] stores p(t|e_i) for example b
     # dist_logits[b, i, j] stores DistNet(i, j, I[b], J[b])
     inputs = tf.cast(features["inputs"], tf.int32)
@@ -197,3 +176,99 @@ class Model2(Model1):
     lexdist_sum = tf.reduce_sum(factors * lex_scores * dist_logits, axis=1)
     lexdist_loss = tf.reduce_sum(targets_weights * tf.log(lexdist_sum))
     return -lexdist_loss + dist_partition_sum
+
+  def predict_next_word(self, features, params, precomputed):
+    lex_probs_num, dist_logits = precomputed
+    j = tf.shape(features['targets'])[1]
+    inputs = features["inputs"]
+    inputs_weights = common_utils.weights_nonzero(inputs) 
+
+    lex_probs_denom = tf.reduce_sum(lex_probs_num, axis=-1)
+    dist_probs_num = dist_logits[:, :, j] * inputs_weights
+    dist_probs_denom = tf.reduce_sum(dist_probs_num, axis=1, keep_dims=True)
+    dist_probs = tf.expand_dims(dist_probs_num / dist_probs_denom, -1)
+    # dist_probs is [batch_size, max_src_len, 1]
+
+    factors = tf.expand_dims(inputs_weights / lex_probs_denom, -1)
+    inner = factors * lex_probs_num * dist_probs
+    # inner has shape [batch_size, max_src_length, trg_vocab_size]
+    return tf.log(tf.reduce_sum(inner, axis=1))
+
+
+class Model2(BaseModel2):
+
+  def precompute(self, features, mode, params):
+    """We precompute the lexical translation logits for each src token and the
+    IxJ table of distortion logits.
+    """
+    lex_logits = self.compute_lex_logits(features, 'inputs', params)
+    I = tf.cast(common_utils.get_sentence_length(features["inputs"]), tf.int32)
+    J = tf.cast(common_utils.get_sentence_length(features["targets"]), tf.int32)
+    dist_logits = self.compute_distance_scores(I, J, params)
+    return lex_logits, dist_logits
+
+  def compute_distance_scores(self, I, J, params):
+    """Compute the unnormalized DistNet scores.
+
+    Args:
+      I: A [batch_size] int32 tensor with source sentence lengths
+      J: A [batch_size] int32 tensor with target sentence lengths
+      params: hyper-parameters for that model
+
+    Returns:
+      A [batch_size, max_src_len, max_trg_len] float32 tensor where the
+      entry at [b, i, j] stores DistNet(i, j, I[b], J[b])
+    """
+    max_i = tf.reduce_max(I)
+    max_j = tf.reduce_max(J)
+    batch_size = tf.shape(I)[0]
+    expand_I = common_utils.expand_to_shape(I, ["x", max_i, max_j])
+    expand_J = common_utils.expand_to_shape(J, ["x", max_i, max_j])
+    expand_i = common_utils.expand_to_shape(tf.range(max_i), [batch_size, "x", max_j])
+    expand_j = common_utils.expand_to_shape(tf.range(max_j), [batch_size, max_i, "x"])
+    int_inputs = tf.stack([expand_I, expand_J, expand_i, expand_j], axis=-1)
+    max_pos = tf.reduce_max(tf.concat([I, J], 0)) + 1
+    pos_embeds = self.compute_positional_embeddings(
+        max_pos, params, params.pos_embed_size,params.max_timescale)
+    embedded = tf.gather(pos_embeds, int_inputs)
+    net = tf.reshape(embedded, [batch_size, max_i, max_j, params.pos_embed_size * 4])
+    return self.compute_dist_net(net, params)
+
+
+class Model2s(BaseModel2):
+
+  def precompute(self, features, mode, params):
+    """We precompute the lexical translation logits for each src token and the
+    IxJ table of distortion logits.
+    """
+    lex_logits = self.compute_lex_logits(features, 'inputs', params)
+    I = tf.cast(common_utils.get_sentence_length(features["inputs"]), tf.int32)
+    max_j = tf.shape(features['targets'])[1]
+    dist_logits = self.compute_distance_scores(I, max_j, params)
+    return lex_logits, dist_logits
+
+  def compute_distance_scores(self, I, max_j, params):
+    """Compute the unnormalized DistNet scores.
+
+    Args:
+      I: A [batch_size] int32 tensor with source sentence lengths
+      max_j: A int32 TF scalarwith the maximum target sentence lengths
+      params: hyper-parameters for that model
+
+    Returns:
+      A [batch_size, max_src_len, max_trg_len] float32 tensor where the
+      entry at [b, i, j] stores DistNet(i, j, I[b])
+    """
+    max_i = tf.reduce_max(I)
+    batch_size = tf.shape(I)[0]
+    expand_I = common_utils.expand_to_shape(I, ["x", max_i, max_j])
+    expand_i = common_utils.expand_to_shape(tf.range(max_i), [batch_size, "x", max_j])
+    expand_j = common_utils.expand_to_shape(tf.range(max_j), [batch_size, max_i, "x"])
+    int_inputs = tf.stack([expand_I, expand_i, expand_j], axis=-1)
+    max_pos = tf.maximum(max_i, max_j) + 1
+    pos_embeds = self.compute_positional_embeddings(
+        max_pos, params, params.pos_embed_size,params.max_timescale)
+    embedded = tf.gather(pos_embeds, int_inputs)
+    net = tf.reshape(embedded, [batch_size, max_i, max_j, params.pos_embed_size * 3])
+    return self.compute_dist_net(net, params)
+

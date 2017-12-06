@@ -102,3 +102,14 @@ class Model1(NizzaModel):
     # targets, targets_weights, outer_summands have [batch_size, target_length]
     return -tf.reduce_sum(targets_weights * outer_summands)
 
+  def predict_next_word(self, features, params, precomputed):
+    """Returns the sum over all lexical translation scores."""
+    inputs = features["inputs"]
+    probs_num = precomputed
+    probs_denom = tf.reduce_sum(probs_num, axis=-1)
+    inputs_weights = common_utils.weights_nonzero(inputs) 
+    factors = tf.expand_dims(inputs_weights / probs_denom, -1)
+    log_probs_sum = tf.log(tf.reduce_sum(factors * probs_num, axis=-2))
+    # log_probs_sum has shape [batch_size, target_vocab_size]
+    return log_probs_sum
+
