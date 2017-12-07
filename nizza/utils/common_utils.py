@@ -99,6 +99,13 @@ def pad_to_same_length(x, y, final_length_divisible_by=1, axis=1):
     return res_x, res_y
 
 
+def safe_div(a, b):
+  return a / tf.maximum(1.0e-9, b)
+
+def safe_log(a):
+  return tf.log(tf.maximum(1.0e-9, a))
+
+
 def add_hidden_layer_summary(value, tag):
   tf.summary.scalar("%s_fraction_of_zero_values" % tag, tf.nn.zero_fraction(value))
   tf.summary.histogram("%s_activation" % tag, value)

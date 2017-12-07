@@ -126,7 +126,7 @@ class BaseModel2(Model1):
     inputs_weights = common_utils.weights_nonzero(inputs) 
     targets_weights = common_utils.weights_nonzero(targets) 
     dist_logits_zeroed = dist_logits * tf.expand_dims(inputs_weights, axis=2)
-    dist_partition = tf.log(tf.reduce_sum(dist_logits_zeroed, axis=1))
+    dist_partition = common_utils.safe_log(tf.reduce_sum(dist_logits_zeroed, axis=1))
     dist_partition_sum = tf.reduce_sum(dist_partition * targets_weights)
    
     shp = tf.shape(inputs)
@@ -134,7 +134,7 @@ class BaseModel2(Model1):
     max_src_len = shp[1]
     max_trg_len = tf.shape(targets)[1]
     lex_probs_denom = tf.reduce_sum(lex_probs_num, axis=-1)
-    factors = tf.expand_dims(inputs_weights / lex_probs_denom, -1)
+    factors = tf.expand_dims(common_utils.safe_div(inputs_weights, lex_probs_denom), -1)
     # lex_probs_num is [batch_size, src_len, trg_vocab_size]
     # factors is [batch_size, src_len, 1]
     targets_repeated = tf.tile(tf.expand_dims(targets, 1), tf.convert_to_tensor([1, max_src_len, 1]))
@@ -145,7 +145,7 @@ class BaseModel2(Model1):
     lex_scores = tf.reshape(lex_scores_flat, [batch_size, max_src_len, max_trg_len])
     # lex_scores is [batch_size, src_len, trg_len] and contains p(f_j|e_i)
     lexdist_sum = tf.reduce_sum(factors * lex_scores * dist_logits, axis=1)
-    lexdist_loss = tf.reduce_sum(targets_weights * tf.log(lexdist_sum))
+    lexdist_loss = tf.reduce_sum(targets_weights * common_utils.safe_log(lexdist_sum))
     return -lexdist_loss + dist_partition_sum
 
   def predict_next_word(self, features, params, precomputed):
@@ -157,13 +157,13 @@ class BaseModel2(Model1):
     lex_probs_denom = tf.reduce_sum(lex_probs_num, axis=-1)
     dist_probs_num = dist_logits[:, :, j] * inputs_weights
     dist_probs_denom = tf.reduce_sum(dist_probs_num, axis=1, keep_dims=True)
-    dist_probs = tf.expand_dims(dist_probs_num / dist_probs_denom, -1)
+    dist_probs = tf.expand_dims(common_utils.safe_div(dist_probs_num, dist_probs_denom), -1)
     # dist_probs is [batch_size, max_src_len, 1]
 
-    factors = tf.expand_dims(inputs_weights / lex_probs_denom, -1)
+    factors = tf.expand_dims(common_utils.safe_div(inputs_weights, lex_probs_denom), -1)
     inner = factors * lex_probs_num * dist_probs
     # inner has shape [batch_size, max_src_length, trg_vocab_size]
-    return tf.log(tf.reduce_sum(inner, axis=1))
+    return common_utils.safe_log(tf.reduce_sum(inner, axis=1))
 
 
 class Model2(BaseModel2):

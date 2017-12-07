@@ -93,8 +93,8 @@ class Model1(NizzaModel):
     probs_num = precomputed
     probs_denom = tf.reduce_sum(probs_num, axis=-1)
     inputs_weights = common_utils.weights_nonzero(inputs) 
-    factors = tf.expand_dims(inputs_weights / probs_denom, -1)
-    log_probs_sum = tf.log(tf.reduce_sum(factors * probs_num, axis=-2))
+    factors = tf.expand_dims(common_utils.safe_div(inputs_weights, probs_denom), -1)
+    log_probs_sum = common_utils.safe_log(tf.reduce_sum(factors * probs_num, axis=-2))
     # log_probs_sum has shape [batch_size, target_vocab_size]
     outer_summands = common_utils.gather_2d(log_probs_sum, 
                                             tf.cast(targets, tf.int32))
@@ -108,8 +108,8 @@ class Model1(NizzaModel):
     probs_num = precomputed
     probs_denom = tf.reduce_sum(probs_num, axis=-1)
     inputs_weights = common_utils.weights_nonzero(inputs) 
-    factors = tf.expand_dims(inputs_weights / probs_denom, -1)
-    log_probs_sum = tf.log(tf.reduce_sum(factors * probs_num, axis=-2))
+    factors = tf.expand_dims(common_utils.safe_div(inputs_weights, probs_denom), -1)
+    log_probs_sum = common_utils.safe_log(tf.reduce_sum(factors * probs_num, axis=-2))
     # log_probs_sum has shape [batch_size, target_vocab_size]
     return log_probs_sum
 
