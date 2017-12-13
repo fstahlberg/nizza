@@ -100,10 +100,10 @@ def pad_to_same_length(x, y, final_length_divisible_by=1, axis=1):
 
 
 def safe_div(a, b):
-  return a / tf.maximum(1.0e-9, b)
+  return tf.clip_by_value(a / tf.maximum(1.0e-20, b), 0.0, 1.0)
 
 def safe_log(a):
-  return tf.log(tf.maximum(1.0e-9, a))
+  return tf.log(tf.maximum(1.0e-30, a))
 
 
 def add_hidden_layer_summary(value, tag):
