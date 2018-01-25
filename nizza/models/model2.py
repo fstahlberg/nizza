@@ -23,6 +23,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy
 import math
 
 from nizza.nizza_model import NizzaModel
@@ -35,18 +36,24 @@ from tensorflow.contrib.training.python.training import hparam
 
 def register_hparams_sets():
   base = hparam.HParams(
-    lex_hidden_units=[512, 512, 512],
+    lex_hidden_units=[512, 512],
+    lex_layer_types=["ffn", "ffn"],
     dist_hidden_units=[128],
     inputs_embed_size=512,
     pos_embed_size=128,
     activation_fn=tf.nn.relu,
     max_timescale=250.0,
-    logit_fn=tf.sigmoid, # tf.exp, tf.sigmoid
     dropout=None
   )
   all_hparams = {}
   all_hparams["model2_default"] = base
   all_hparams["model2s_default"] = base
+  # RNN setups
+  params = copy.deepcopy(base)
+  params.lex_hidden_units = [512]
+  params.lex_layer_types = ["bilstm"]
+  all_hparams["model2_rnn"] = params
+  all_hparams["model2s_rnn"] = params
   return all_hparams
 
 
@@ -112,58 +119,59 @@ class BaseModel2(Model1):
       logits = tf.contrib.layers.fully_connected(
           net,
           1,
-          activation_fn=params.logit_fn)
+          activation_fn=None)
     logits = tf.squeeze(logits, axis=-1)
     common_utils.add_hidden_layer_summary(logits, logits_scope.name)
     return logits
 
   def compute_loss(self, features, mode, params, precomputed):
-    lex_probs_num, dist_logits = precomputed
-    # lex_probs_num[b, i, t] stores p(t|e_i) for example b
-    # dist_logits[b, i, j] stores DistNet(i, j, I[b], J[b])
+    lex_logits, dist_logits = precomputed
     inputs = tf.cast(features["inputs"], tf.int32)
     targets = tf.cast(features["targets"], tf.int32)
-    inputs_weights = common_utils.weights_nonzero(inputs) 
-    targets_weights = common_utils.weights_nonzero(targets) 
-    dist_logits_zeroed = dist_logits * tf.expand_dims(inputs_weights, axis=2)
-    dist_partition = common_utils.safe_log(tf.reduce_sum(dist_logits_zeroed, axis=1))
-    dist_partition_sum = tf.reduce_sum(dist_partition * targets_weights)
-   
-    shp = tf.shape(inputs)
-    batch_size = shp[0]
-    max_src_len = shp[1]
-    max_trg_len = tf.shape(targets)[1]
-    lex_probs_denom = tf.reduce_sum(lex_probs_num, axis=-1)
-    factors = tf.expand_dims(common_utils.safe_div(inputs_weights, lex_probs_denom), -1)
-    # lex_probs_num is [batch_size, src_len, trg_vocab_size]
-    # factors is [batch_size, src_len, 1]
-    targets_repeated = tf.tile(tf.expand_dims(targets, 1), tf.convert_to_tensor([1, max_src_len, 1]))
-    # targets_repeated is [batch_size, src_len, trg_len]
-    lex_probs_flat = tf.reshape(lex_probs_num, [batch_size*max_src_len, params.targets_vocab_size])
-    targets_flat = tf.reshape(targets_repeated, [batch_size*max_src_len, max_trg_len])
-    lex_scores_flat = common_utils.gather_2d(lex_probs_flat, targets_flat)
-    lex_scores = tf.reshape(lex_scores_flat, [batch_size, max_src_len, max_trg_len])
-    # lex_scores is [batch_size, src_len, trg_len] and contains p(f_j|e_i)
-    lexdist_sum = tf.reduce_sum(factors * lex_scores * dist_logits, axis=1)
-    lexdist_loss = tf.reduce_sum(targets_weights * common_utils.safe_log(lexdist_sum))
-    return -lexdist_loss + dist_partition_sum
+    # src_weights, trg_weights, and src_bias are used for masking out
+    # the pad symbols for loss computation *_weights is 0.0 at pad
+    # symbols and 1.0 everywhere else. src_bias is scaled between
+    # -1.0e9 and 1.0e9
+    src_weights = common_utils.weights_nonzero(inputs) # mask padding
+    trg_weights = common_utils.weights_nonzero(targets) # mask padding
+    src_bias = (src_weights - 0.5) * 2.0e9
+    batch_size = tf.shape(inputs)[0]
+    # lex_logits has shape [batch_size, max_src_len, trg_vocab_size]
+    lex_partition = tf.reduce_logsumexp(lex_logits, axis=-1)
+    dist_partition = tf.reduce_logsumexp(dist_logits, axis=1)
+    # lex_partition has shape [batch_size, max_src_len]
+    # dist_partition has shape [batch_size, max_trg_len]
+    max_src_len = tf.shape(inputs)[1]
+    targets_expand = tf.tile(tf.expand_dims(targets, 1), [1, max_src_len, 1])
+    # targets_expand has shape [batch_size, max_src_len, max_trg_len]
+    lex_src_trg_scores_flat = common_utils.gather_2d(
+        tf.reshape(lex_logits, [batch_size * max_src_len,- 1]),
+        tf.reshape(targets_expand, [batch_size * max_src_len, -1]))
+    lex_src_trg_scores = tf.reshape(lex_src_trg_scores_flat, 
+                                    [batch_size, max_src_len, -1])
+    # src_trg_scores has shape [batch_size, max_src_len, max_trg_len]
+    src_trg_scores = lex_src_trg_scores - tf.expand_dims(lex_partition, 2) + dist_logits
+    src_trg_scores_masked = tf.minimum(src_trg_scores, 
+                                       tf.expand_dims(src_bias, 2))
+    trg_scores = tf.reduce_logsumexp(src_trg_scores_masked, axis=1) - dist_partition
+    return -tf.reduce_sum(trg_weights * trg_scores)
+
 
   def predict_next_word(self, features, params, precomputed):
-    lex_probs_num, dist_logits = precomputed
-    j = tf.shape(features['targets'])[1]
-    inputs = features["inputs"]
-    inputs_weights = common_utils.weights_nonzero(inputs) 
-
-    lex_probs_denom = tf.reduce_sum(lex_probs_num, axis=-1)
-    dist_probs_num = dist_logits[:, :, j] * inputs_weights
-    dist_probs_denom = tf.reduce_sum(dist_probs_num, axis=1, keep_dims=True)
-    dist_probs = tf.expand_dims(common_utils.safe_div(dist_probs_num, dist_probs_denom), -1)
-    # dist_probs is [batch_size, max_src_len, 1]
-
-    factors = tf.expand_dims(common_utils.safe_div(inputs_weights, lex_probs_denom), -1)
-    inner = factors * lex_probs_num * dist_probs
-    # inner has shape [batch_size, max_src_length, trg_vocab_size]
-    return common_utils.safe_log(tf.reduce_sum(inner, axis=1))
+    lex_logits, dist_logits = precomputed
+    src_weights = common_utils.weights_nonzero(features["inputs"]) # mask padding
+    src_bias = (src_weights - 0.5) * 2.0e9
+    j = tf.shape(features['targets'])[1] - 1
+    this_dist_logits = dist_logits[:, :, j]
+    lex_partition = tf.reduce_logsumexp(lex_logits, axis=-1, keep_dims=True)
+    dist_partition = tf.reduce_logsumexp(this_dist_logits, axis=1)
+    # lex_partition has shape [batch_size, max_src_len, 1]
+    # dist_partition has shape [batch_size]
+    src_scores = lex_logits - lex_partition + tf.expand_dims(this_dist_logits, 2)
+    # src_scores has shape [batch_size, max_src_len, trg_vocab_size]
+    src_scores_masked = tf.minimum(src_scores, 
+                                   tf.expand_dims(src_bias, 2))
+    return tf.reduce_logsumexp(src_scores_masked, axis=1) - tf.expand_dims(dist_partition, 1)
 
 
 class Model2(BaseModel2):

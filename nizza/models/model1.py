@@ -24,17 +24,24 @@ from nizza.utils import common_utils
 import tensorflow as tf
 from tensorflow.contrib.training.python.training import hparam
 
+import copy
+
 
 def register_hparams_sets():
   base = hparam.HParams(
-    lex_hidden_units=[512, 512, 512],
+    lex_hidden_units=[512, 512],
+    lex_layer_types=["ffn", "ffn"], # ffn, lstm, bilstm
     inputs_embed_size=512,
     activation_fn=tf.nn.relu,
-    logit_fn=tf.exp, # tf.exp, tf.sigmoid
     dropout=None
   )
   all_hparams = {}
   all_hparams["model1_default"] = base
+  # RNN setup
+  params = copy.deepcopy(base)
+  params.lex_hidden_units = [512]
+  params.lex_layer_types = ["bilstm"]
+  all_hparams["model1_rnn"] = params
   return all_hparams
 
 
@@ -64,15 +71,38 @@ class Model1(NizzaModel):
       with unnormalized translation scores of the target words given the
       source words.
     """
+    not_padding = tf.not_equal(features['inputs'], common_utils.PAD_ID)
+    sequence_length = tf.reduce_sum(tf.cast(not_padding, tf.int32), axis=1)
     net = self.embed(features, 'inputs', params)
-    for layer_id, num_hidden_units in enumerate(params.lex_hidden_units):
+    for layer_id, (num_hidden_units, layer_type) in enumerate(
+          zip(params.lex_hidden_units, params.lex_layer_types)):
       with tf.variable_scope(
           "lex_hiddenlayer_%d" % layer_id,
           values=(net,)) as hidden_layer_scope:
-        net = tf.contrib.layers.fully_connected(
+        if layer_type == "ffm":
+          net = tf.contrib.layers.fully_connected(
+              net,
+              num_hidden_units,
+              activation_fn=params.activation_fn)
+        elif layer_type == "lstm":
+          cell = tf.contrib.rnn.BasicLSTMCell(hparams.hidden_size)
+          net, _ = tf.nn.dynamic_rnn(
+            cell,
             net,
-            num_hidden_units,
-            activation_fn=params.activation_fn)
+            sequence_length=sequence_length,
+            dtype=tf.float32)
+        elif layer_type == "bilstm":
+          with tf.variable_scope("fwd"):
+            fwd_cell = tf.contrib.rnn.BasicLSTMCell(num_hidden_units / 2)
+          with tf.variable_scope("bwd"):
+            bwd_cell = tf.contrib.rnn.BasicLSTMCell(num_hidden_units / 2)
+          bi_net, _ = tf.nn.bidirectional_dynamic_rnn(
+            fwd_cell, bwd_cell, net,
+            sequence_length=sequence_length,
+            dtype=tf.float32)
+          net = tf.concat(bi_net, -1)
+        else:
+          raise AttributeError("Unknown layer type '%s'" % layer_type)
         if params.dropout is not None and mode == model_fn.ModeKeys.TRAIN:
           net = layers.dropout(net, keep_prob=(1.0 - params.dropout))
       common_utils.add_hidden_layer_summary(net, hidden_layer_scope.name)
@@ -84,32 +114,50 @@ class Model1(NizzaModel):
           params.targets_vocab_size,
           activation_fn=None)
     common_utils.add_hidden_layer_summary(logits, logits_scope.name)
-    return params.logit_fn(logits)
+    return logits
 
   def compute_loss(self, features, mode, params, precomputed):
     """See paper on how to compute the loss for Model 1."""
-    inputs = features["inputs"]
-    targets = features["targets"]
-    probs_num = precomputed
-    probs_denom = tf.reduce_sum(probs_num, axis=-1)
-    inputs_weights = common_utils.weights_nonzero(inputs) 
-    factors = tf.expand_dims(common_utils.safe_div(inputs_weights, probs_denom), -1)
-    log_probs_sum = common_utils.safe_log(tf.reduce_sum(factors * probs_num, axis=-2))
-    # log_probs_sum has shape [batch_size, target_vocab_size]
-    outer_summands = common_utils.gather_2d(log_probs_sum, 
-                                            tf.cast(targets, tf.int32))
-    targets_weights = common_utils.weights_nonzero(targets) 
-    # targets, targets_weights, outer_summands have [batch_size, target_length]
-    return -tf.reduce_sum(targets_weights * outer_summands)
+    lex_logits = precomputed
+    inputs = tf.cast(features["inputs"], tf.int32)
+    targets = tf.cast(features["targets"], tf.int32)
+    # src_weights, trg_weights, and src_bias are used for masking out
+    # the pad symbols for loss computation *_weights is 0.0 at pad
+    # symbols and 1.0 everywhere else. src_bias is scaled between
+    # -1.0e9 and 1.0e9
+    src_weights = common_utils.weights_nonzero(inputs) # mask padding
+    trg_weights = common_utils.weights_nonzero(targets) # mask padding
+    src_bias = (src_weights - 0.5) * 2.0e9
+    batch_size = tf.shape(inputs)[0]
+    # lex_logits has shape [batch_size, max_src_len, trg_vocab_size]
+    partition = tf.reduce_logsumexp(lex_logits, axis=-1)
+    # partition has shape [batch_size, max_src_len]
+    max_src_len = tf.shape(inputs)[1]
+    targets_expand = tf.tile(tf.expand_dims(targets, 1), [1, max_src_len, 1])
+    # targets_expand has shape [batch_size, max_src_len, max_trg_len]
+    src_trg_scores_flat = common_utils.gather_2d(
+        tf.reshape(lex_logits, [batch_size * max_src_len,- 1]),
+        tf.reshape(targets_expand, [batch_size * max_src_len, -1]))
+    src_trg_scores = tf.reshape(src_trg_scores_flat, 
+                                [batch_size, max_src_len, -1])
+    # src_trg_scores has shape [batch_size, max_src_len, max_trg_len]
+    src_trg_scores_norm = src_trg_scores - tf.expand_dims(partition, 2)
+    src_trg_scores_masked = tf.minimum(src_trg_scores_norm, 
+                                       tf.expand_dims(src_bias, 2))
+    trg_scores = tf.reduce_logsumexp(src_trg_scores_masked, axis=1)
+    # trg_weights and trg_scores have shape [batch_size, max_trg_len]
+    return -tf.reduce_sum(trg_weights * trg_scores)
 
   def predict_next_word(self, features, params, precomputed):
     """Returns the sum over all lexical translation scores."""
-    inputs = features["inputs"]
-    probs_num = precomputed
-    probs_denom = tf.reduce_sum(probs_num, axis=-1)
-    inputs_weights = common_utils.weights_nonzero(inputs) 
-    factors = tf.expand_dims(common_utils.safe_div(inputs_weights, probs_denom), -1)
-    log_probs_sum = common_utils.safe_log(tf.reduce_sum(factors * probs_num, axis=-2))
-    # log_probs_sum has shape [batch_size, target_vocab_size]
-    return log_probs_sum
+    lex_logits = precomputed
+    inputs = tf.cast(features["inputs"], tf.int32)
+    src_weights = common_utils.weights_nonzero(inputs) # mask padding
+    src_bias = (src_weights - 0.5) * 2.0e9
+    # lex_logits has shape [batch_size, max_src_len, trg_vocab_size]
+    partition = tf.reduce_logsumexp(lex_logits, axis=-1, keep_dims=True)
+    # partition has shape [batch_size, max_src_len, 1]
+    src_scores = lex_logits - partition
+    src_scores_masked = tf.minimum(src_scores, tf.expand_dims(src_bias, 2))
+    return tf.reduce_logsumexp(src_scores_masked, axis=1)
 
