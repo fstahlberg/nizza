@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2017 The Nizza Authors.
+# Copyright 2018 The Nizza Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -79,7 +79,7 @@ class Model1(NizzaModel):
       with tf.variable_scope(
           "lex_hiddenlayer_%d" % layer_id,
           values=(net,)) as hidden_layer_scope:
-        if layer_type == "ffm":
+        if layer_type == "ffn":
           net = tf.contrib.layers.fully_connected(
               net,
               num_hidden_units,
